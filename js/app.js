@@ -27,6 +27,7 @@ let recipeQuery  = '';
 // localStorage keys
 const LS_CHECKS   = 'mp_checks';   // { 'YYYY-WW': { 'item name': true } }
 const LS_OFFSET   = 'mp_offset';   // saved week offset
+const LS_SKIP     = 'mp_skip';     // { 'YYYY-WW': { '0-b': true, ... } } excluded meals
 
 // ─────────────────────────────────────────────
 // DATE UTILITIES
@@ -97,28 +98,33 @@ function unitNorm(unit) {
 }
 
 function buildShoppingList(monday) {
+  const wk = weekKey(monday);
+  const skips = getSkips(wk);
   const aggregated = {};
 
   for (let d = 0; d < 7; d++) {
     const plan = getDayPlan(monday, d);
     const dinner = getMeal(plan.d);
-    // Batch recipes already written for 4 servings; regular dinners scaled by day
     const dinnerMult = (dinner && dinner.batch) ? 1 : DINNER_SERVINGS[d];
 
-    [[getMeal(plan.b), 1], [getMeal(plan.l), 1], [dinner, dinnerMult]]
-      .forEach(([meal, mult]) => {
-        if (!meal || !meal.ingredients) return;
-        meal.ingredients.forEach(ing => {
-          const key = ing.name.toLowerCase().trim();
-          const u = unitNorm(ing.unit);
-          if (!aggregated[key]) {
-            aggregated[key] = { name: ing.name, unit: u, category: ing.category, qty: 0 };
-          }
-          if (u === aggregated[key].unit) {
-            aggregated[key].qty += ing.qty * mult;
-          }
-        });
+    [
+      [getMeal(plan.b), 1,          'b'],
+      [getMeal(plan.l), 1,          'l'],
+      [dinner,          dinnerMult, 'd'],
+    ].forEach(([meal, mult, tc]) => {
+      if (!meal || !meal.ingredients) return;
+      if (skips[`${d}-${tc}`]) return;
+      meal.ingredients.forEach(ing => {
+        const key = ing.name.toLowerCase().trim();
+        const u = unitNorm(ing.unit);
+        if (!aggregated[key]) {
+          aggregated[key] = { name: ing.name, unit: u, category: ing.category, qty: 0 };
+        }
+        if (u === aggregated[key].unit) {
+          aggregated[key].qty += ing.qty * mult;
+        }
       });
+    });
   }
 
   return Object.values(aggregated).sort((a, b) => a.name.localeCompare(b.name));
@@ -227,6 +233,17 @@ function setCheck(wk, itemName, val) {
   localStorage.setItem(LS_CHECKS, JSON.stringify(all));
 }
 
+function getSkips(wk) {
+  return JSON.parse(localStorage.getItem(LS_SKIP) || '{}')[wk] || {};
+}
+function setSkip(wk, key, skipped) {
+  const all = JSON.parse(localStorage.getItem(LS_SKIP) || '{}');
+  if (!all[wk]) all[wk] = {};
+  if (skipped) all[wk][key] = true;
+  else delete all[wk][key];
+  localStorage.setItem(LS_SKIP, JSON.stringify(all));
+}
+
 function clearChecks(wk) {
   const all = JSON.parse(localStorage.getItem(LS_CHECKS) || '{}');
   delete all[wk];
@@ -248,6 +265,8 @@ function renderCalendar() {
 
   const grid = document.getElementById('calendar-grid');
   grid.innerHTML = '';
+  const wk = weekKey(monday);
+  const skips = getSkips(wk);
 
   for (let d = 0; d < 7; d++) {
     const date   = addDays(monday, d);
@@ -268,10 +287,16 @@ function renderCalendar() {
     hdr.innerHTML = `<span class="day-name">${DAY_FULL[d]}</span><span class="day-date">${fmtDate(date)}${dayNote}</span>`;
     card.appendChild(hdr);
 
-    [[bMeal,'breakfast'],[lMeal,'lunch'],[dMeal,'dinner']].forEach(([meal,type]) => {
+    [[bMeal,'breakfast','b'],[lMeal,'lunch','l'],[dMeal,'dinner','d']].forEach(([meal,type,tc]) => {
       if (!meal) return;
+      const skipKey  = `${d}-${tc}`;
+      const skipped  = !!skips[skipKey];
+
+      const row = document.createElement('div');
+      row.className = 'meal-row';
+
       const btn = document.createElement('button');
-      btn.className = 'meal-row-btn';
+      btn.className = 'meal-row-btn' + (skipped ? ' skipped' : '');
       btn.setAttribute('aria-label', `View recipe: ${meal.name}`);
 
       const tags = [];
@@ -289,7 +314,24 @@ function renderCalendar() {
         </span>`;
 
       btn.addEventListener('click', () => openRecipe(meal.id));
-      card.appendChild(btn);
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'meal-include-cb';
+      cb.checked = !skipped;
+      cb.setAttribute('aria-label', `Include ${meal.name} in shopping list`);
+      cb.addEventListener('change', e => {
+        e.stopPropagation();
+        skips[skipKey] = !cb.checked ? true : undefined;
+        if (!cb.checked) skips[skipKey] = true; else delete skips[skipKey];
+        setSkip(wk, skipKey, !cb.checked);
+        btn.classList.toggle('skipped', !cb.checked);
+        if (activeView === 'shopping') renderShopping();
+      });
+
+      row.appendChild(btn);
+      row.appendChild(cb);
+      card.appendChild(row);
     });
 
     grid.appendChild(card);

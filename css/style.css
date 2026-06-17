@@ -196,6 +196,18 @@ input  { font-family: inherit; }
 }
 .meal-row-btn:active { background: var(--green-50); }
 
+.meal-include-cb {
+  flex-shrink: 0;
+  align-self: center;
+  width: 18px;
+  height: 18px;
+  margin: 0 0.6rem 0 0;
+  accent-color: var(--green-500);
+  cursor: pointer;
+}
+.meal-row-btn.skipped { opacity: 0.38; }
+.meal-row-btn.skipped .meal-name { text-decoration: line-through; }
+
 /* ── Shopping View ── */
 .shop-header {
   display: flex;

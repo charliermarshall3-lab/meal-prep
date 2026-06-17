@@ -32,28 +32,30 @@ const LS_SKIP     = 'mp_skip';     // { 'YYYY-WW': { '0-b': true, ... } } exclud
 // ─────────────────────────────────────────────
 // DATE UTILITIES
 // ─────────────────────────────────────────────
-function mondayOf(date) {
+// Week display is anchored to Wednesday (shopping/prep day), not Monday.
+// Meal rotation data in meals.js is still indexed Mon=0…Sun=6 internally.
+function weekAnchorOf(date) {
   const d = new Date(date);
   const day = d.getDay(); // 0=Sun … 6=Sat
-  const diff = day === 0 ? -6 : 1 - day;
+  const diff = -(((day - 3) % 7 + 7) % 7); // most recent Wednesday on/before date
   d.setDate(d.getDate() + diff);
   d.setHours(0, 0, 0, 0);
   return d;
 }
 
-function rotationWeekFor(monday) {
-  const epochMonday = mondayOf(ROTATION_EPOCH);
-  const diffMs = monday - epochMonday;
+function rotationWeekFor(weekAnchor) {
+  const epochAnchor = addDays(ROTATION_EPOCH, 2); // Wed of epoch week (17 Jun 2026)
+  const diffMs = weekAnchor - epochAnchor;
   const diffWeeks = Math.round(diffMs / (7 * 24 * 60 * 60 * 1000));
   return ((diffWeeks % 13) + 13) % 13;
 }
 
-function currentMondayBase() {
-  return mondayOf(new Date());
+function currentWeekAnchorBase() {
+  return weekAnchorOf(new Date());
 }
 
-function weekMondayFromOffset(offset) {
-  const base = currentMondayBase();
+function weekAnchorFromOffset(offset) {
+  const base = currentWeekAnchorBase();
   base.setDate(base.getDate() + offset * 7);
   return base;
 }
@@ -73,16 +75,16 @@ function isToday(d) {
   return d.getDate() === t.getDate() && d.getMonth() === t.getMonth() && d.getFullYear() === t.getFullYear();
 }
 
-function weekKey(monday) {
-  return `${monday.getFullYear()}-W${String(rotationWeekFor(monday)+1).padStart(2,'0')}-${monday.getDate()}`;
+function weekKey(weekAnchor) {
+  return `${weekAnchor.getFullYear()}-W${String(rotationWeekFor(weekAnchor)+1).padStart(2,'0')}-${weekAnchor.getDate()}`;
 }
 
 // ─────────────────────────────────────────────
 // MEAL LOOKUP
 // ─────────────────────────────────────────────
-function getDayPlan(monday, dayIndex) {
+function getDayPlan(weekAnchor, dayIndex) {
   // dayIndex: 0=Mon … 6=Sun
-  const rotWeek = rotationWeekFor(monday);
+  const rotWeek = rotationWeekFor(weekAnchor);
   return ROTATION[rotWeek][dayIndex];
 }
 
@@ -97,13 +99,13 @@ function unitNorm(unit) {
   return (unit || '').toLowerCase().trim();
 }
 
-function buildShoppingList(monday) {
-  const wk = weekKey(monday);
+function buildShoppingList(weekAnchor) {
+  const wk = weekKey(weekAnchor);
   const skips = getSkips(wk);
   const aggregated = {};
 
   for (let d = 0; d < 7; d++) {
-    const plan = getDayPlan(monday, d);
+    const plan = getDayPlan(weekAnchor, d);
     const dinner = getMeal(plan.d);
     const dinnerMult = (dinner && dinner.batch) ? 1 : DINNER_SERVINGS[d];
 
@@ -254,23 +256,24 @@ function clearChecks(wk) {
 // RENDER: CALENDAR
 // ─────────────────────────────────────────────
 function renderCalendar() {
-  const monday = weekMondayFromOffset(currentWeekOffset);
-  const rotWeek = rotationWeekFor(monday);
-  const weekEnd = addDays(monday, 6);
+  const weekAnchor = weekAnchorFromOffset(currentWeekOffset);
+  const rotWeek = rotationWeekFor(weekAnchor);
+  const weekEnd = addDays(weekAnchor, 6);
 
   document.getElementById('week-label').textContent =
-    `${fmtDate(monday)} – ${fmtDate(weekEnd)}`;
+    `${fmtDate(weekAnchor)} – ${fmtDate(weekEnd)}`;
   document.getElementById('week-num-label').textContent =
     `Rotation week ${rotWeek + 1} of 13`;
 
   const grid = document.getElementById('calendar-grid');
   grid.innerHTML = '';
-  const wk = weekKey(monday);
+  const wk = weekKey(weekAnchor);
   const skips = getSkips(wk);
 
-  for (let d = 0; d < 7; d++) {
-    const date   = addDays(monday, d);
-    const plan   = getDayPlan(monday, d);
+  for (let pos = 0; pos < 7; pos++) {
+    const d      = (pos + 2) % 7; // Wed-anchored display position → Mon-based weekday index
+    const date   = addDays(weekAnchor, pos);
+    const plan   = getDayPlan(weekAnchor, d);
     const bMeal  = getMeal(plan.b);
     const lMeal  = getMeal(plan.l);
     const dMeal  = getMeal(plan.d);
@@ -350,17 +353,17 @@ function updateHeaderBudget() {
 // RENDER: SHOPPING LIST
 // ─────────────────────────────────────────────
 function renderShopping() {
-  const monday = weekMondayFromOffset(currentWeekOffset);
-  const rotWeek = rotationWeekFor(monday);
-  const weekEnd = addDays(monday, 6);
-  const wk = weekKey(monday);
+  const weekAnchor = weekAnchorFromOffset(currentWeekOffset);
+  const rotWeek = rotationWeekFor(weekAnchor);
+  const weekEnd = addDays(weekAnchor, 6);
+  const wk = weekKey(weekAnchor);
 
   document.getElementById('shop-week-label').textContent =
-    `Week of ${fmtDate(monday)}`;
+    `Week of ${fmtDate(weekAnchor)}`;
   document.getElementById('shop-week-sub').textContent =
-    `${fmtDate(monday)} – ${fmtDate(weekEnd)} · Rotation week ${rotWeek + 1}`;
+    `${fmtDate(weekAnchor)} – ${fmtDate(weekEnd)} · Rotation week ${rotWeek + 1}`;
 
-  const items = buildShoppingList(monday);
+  const items = buildShoppingList(weekAnchor);
   const checks = getChecks(wk);
   const est = estimateCost(items);
   document.getElementById('shop-total').textContent = `$${est.toFixed(0)}`;
@@ -605,8 +608,8 @@ function switchView(name) {
 // COPY SHOPPING LIST
 // ─────────────────────────────────────────────
 function copyShoppingList() {
-  const monday = weekMondayFromOffset(currentWeekOffset);
-  const items  = buildShoppingList(monday);
+  const weekAnchor = weekAnchorFromOffset(currentWeekOffset);
+  const items  = buildShoppingList(weekAnchor);
 
   const grouped = {};
   CATEGORIES.forEach(c => { grouped[c.key] = []; });
@@ -616,7 +619,7 @@ function copyShoppingList() {
     if (grouped[cat]) grouped[cat].push(item);
   });
 
-  let text = `🛒 Shopping List — ${fmtDate(monday)}\n\n`;
+  let text = `🛒 Shopping List — ${fmtDate(weekAnchor)}\n\n`;
 
   CATEGORIES.forEach(cat => {
     const catItems = grouped[cat.key];
@@ -683,8 +686,8 @@ function initEvents() {
 
   // Shopping actions
   document.getElementById('clear-checks').addEventListener('click', () => {
-    const monday = weekMondayFromOffset(currentWeekOffset);
-    clearChecks(weekKey(monday));
+    const weekAnchor = weekAnchorFromOffset(currentWeekOffset);
+    clearChecks(weekKey(weekAnchor));
     renderShopping();
   });
   document.getElementById('copy-list').addEventListener('click', copyShoppingList);

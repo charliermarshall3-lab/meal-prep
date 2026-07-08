@@ -23,11 +23,20 @@ let activeView = 'calendar';
 let openMealId = null;
 let recipeFilter = 'all';
 let recipeQuery  = '';
+let recipeMode = 'mine';      // 'mine' | 'search'
+let swapContext = null;       // { dayIndex, slotType, wk }
+let previewMeals = {};        // in-memory, non-persisted live-search results keyed by temp id
+let searchDebounceTimer = null;
 
 // localStorage keys
 const LS_CHECKS   = 'mp_checks';   // { 'YYYY-WW': { 'item name': true } }
 const LS_OFFSET   = 'mp_offset';   // saved week offset
 const LS_SKIP     = 'mp_skip';     // { 'YYYY-WW': { '0-b': true, ... } } excluded meals
+const LS_OVERRIDE = 'mp_override'; // { 'YYYY-WW': { '0-d': 'mealId', ... } } swapped meals
+const LS_CUSTOM   = 'mp_custom';   // { mealId: mealObj } user-saved/imported recipes
+
+// TheMealDB free public search endpoint (test key "1", no signup required)
+const MEALDB_SEARCH_URL = 'https://www.themealdb.com/api/json/v1/1/search.php?s=';
 
 // ─────────────────────────────────────────────
 // DATE UTILITIES
@@ -85,11 +94,18 @@ function weekKey(weekAnchor) {
 function getDayPlan(weekAnchor, dayIndex) {
   // dayIndex: 0=Mon … 6=Sun
   const rotWeek = rotationWeekFor(weekAnchor);
-  return ROTATION[rotWeek][dayIndex];
+  const basePlan = ROTATION[rotWeek][dayIndex];
+  const wk = weekKey(weekAnchor);
+  const overrides = getOverrides(wk);
+  const ob = overrides[dayIndex + '-b'];
+  const ol = overrides[dayIndex + '-l'];
+  const od = overrides[dayIndex + '-d'];
+  if (!ob && !ol && !od) return basePlan; // fast path, no overrides this week
+  return { b: ob || basePlan.b, l: ol || basePlan.l, d: od || basePlan.d };
 }
 
 function getMeal(id) {
-  return ALL_MEALS[id] || null;
+  return previewMeals[id] || ALL_MEALS[id] || getCustomMeals()[id] || null;
 }
 
 // ─────────────────────────────────────────────
@@ -107,7 +123,7 @@ function buildShoppingList(weekAnchor) {
   for (let d = 0; d < 7; d++) {
     const plan = getDayPlan(weekAnchor, d);
     const dinner = getMeal(plan.d);
-    const dinnerMult = (dinner && dinner.batch) ? 1 : DINNER_SERVINGS[d];
+    const dinnerMult = (dinner && (dinner.batch || dinner.imported)) ? 1 : DINNER_SERVINGS[d];
 
     [
       [getMeal(plan.b), 1,          'b'],
@@ -253,6 +269,107 @@ function clearChecks(wk) {
 }
 
 // ─────────────────────────────────────────────
+// MEAL-SWAP OVERRIDES (local storage, per day-per-week)
+// ─────────────────────────────────────────────
+function getOverrides(wk) {
+  return JSON.parse(localStorage.getItem(LS_OVERRIDE) || '{}')[wk] || {};
+}
+
+function setOverride(wk, key, mealId) {
+  const all = JSON.parse(localStorage.getItem(LS_OVERRIDE) || '{}');
+  if (!all[wk]) all[wk] = {};
+  all[wk][key] = mealId;
+  localStorage.setItem(LS_OVERRIDE, JSON.stringify(all));
+}
+
+function clearOverride(wk, key) {
+  const all = JSON.parse(localStorage.getItem(LS_OVERRIDE) || '{}');
+  if (all[wk]) {
+    delete all[wk][key];
+    localStorage.setItem(LS_OVERRIDE, JSON.stringify(all));
+  }
+}
+
+// ─────────────────────────────────────────────
+// CUSTOM / SAVED RECIPES (local storage)
+// ─────────────────────────────────────────────
+function getCustomMeals() {
+  return JSON.parse(localStorage.getItem(LS_CUSTOM) || '{}');
+}
+
+function saveCustomMeal(meal) {
+  const all = getCustomMeals();
+  all[meal.id] = meal;
+  localStorage.setItem(LS_CUSTOM, JSON.stringify(all));
+  return meal.id;
+}
+
+function deleteCustomMeal(id) {
+  const all = getCustomMeals();
+  delete all[id];
+  localStorage.setItem(LS_CUSTOM, JSON.stringify(all));
+}
+
+function getAllMeals() {
+  return Object.assign({}, ALL_MEALS, getCustomMeals());
+}
+
+// ─────────────────────────────────────────────
+// IMPORT / EXPORT CUSTOM RECIPES
+// ─────────────────────────────────────────────
+function exportCustomMeals() {
+  const meals = Object.values(getCustomMeals());
+  const blob = new Blob([JSON.stringify(meals, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const date = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `meal-planner-recipes-${date}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function importCustomMeals(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(reader.result);
+    } catch (e) {
+      alert('That file is not valid JSON.');
+      return;
+    }
+    if (!Array.isArray(parsed)) {
+      alert('Expected a JSON array of recipes.');
+      return;
+    }
+
+    const existing = getCustomMeals();
+    let added = 0, dup = 0, invalid = 0;
+
+    parsed.forEach(entry => {
+      if (!entry || typeof entry !== 'object' || !entry.id || !entry.name || !Array.isArray(entry.ingredients)) {
+        invalid++;
+        return;
+      }
+      if (existing[entry.id]) {
+        dup++;
+        return;
+      }
+      saveCustomMeal(entry);
+      existing[entry.id] = entry;
+      added++;
+    });
+
+    alert(`Import complete: ${added} added, ${dup} duplicates skipped, ${invalid} invalid skipped.`);
+    if (activeView === 'recipes') renderRecipes();
+  };
+  reader.readAsText(file);
+}
+
+// ─────────────────────────────────────────────
 // RENDER: CALENDAR
 // ─────────────────────────────────────────────
 function renderCalendar() {
@@ -269,6 +386,7 @@ function renderCalendar() {
   grid.innerHTML = '';
   const wk = weekKey(weekAnchor);
   const skips = getSkips(wk);
+  const overrides = getOverrides(wk);
 
   for (let pos = 0; pos < 7; pos++) {
     const d      = (pos + 2) % 7; // Wed-anchored display position → Mon-based weekday index
@@ -332,8 +450,18 @@ function renderCalendar() {
         if (activeView === 'shopping') renderShopping();
       });
 
+      const swapBtn = document.createElement('button');
+      swapBtn.className = 'meal-swap-btn' + (overrides[skipKey] ? ' active' : '');
+      swapBtn.innerHTML = '⇄';
+      swapBtn.setAttribute('aria-label', `Swap ${type}`);
+      swapBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        openSwapModal(d, tc);
+      });
+
       row.appendChild(btn);
       row.appendChild(cb);
+      row.appendChild(swapBtn);
       card.appendChild(row);
     });
 
@@ -461,8 +589,10 @@ function displayImperial(qty, unit) {
 // RENDER: RECIPES VIEW
 // ─────────────────────────────────────────────
 function renderRecipes() {
+  if (recipeMode === 'search') { renderRecipeSearch(); return; }
+
   const q = recipeQuery.toLowerCase();
-  const allMeals = [...BREAKFASTS, ...LUNCHES, ...DINNERS]
+  const allMeals = [...BREAKFASTS, ...LUNCHES, ...DINNERS, ...Object.values(getCustomMeals())]
     .filter(m => m.id !== 'leftover');
 
   const filtered = allMeals.filter(m => {
@@ -502,6 +632,7 @@ function renderRecipes() {
     if (meal.protein)  pills.push(`<span class="recipe-pill">${meal.protein}g protein</span>`);
     if ((meal.tags||[]).includes('spicy'))  pills.push(`<span class="recipe-pill red">🌶 Spicy</span>`);
     if (meal.batch || (meal.tags||[]).includes('batch-friendly')) pills.push(`<span class="recipe-pill purple">Batch</span>`);
+    if (meal.source === 'themealdb') pills.push(`<span class="recipe-pill blue">Saved</span>`);
 
     card.innerHTML = `
       <span class="recipe-emoji">${meal.emoji || '🍽'}</span>
@@ -513,6 +644,158 @@ function renderRecipes() {
     card.addEventListener('click', () => openRecipe(meal.id));
     list.appendChild(card);
   });
+}
+
+// ─────────────────────────────────────────────
+// RECIPE SEARCH (TheMealDB live lookup)
+// ─────────────────────────────────────────────
+function fetchMealDbSearch(query) {
+  return fetch(MEALDB_SEARCH_URL + encodeURIComponent(query))
+    .then(r => {
+      if (!r.ok) throw new Error('bad response');
+      return r.json();
+    })
+    .then(data => (data.meals || []).map(mapMealDbToAppMeal));
+}
+
+function renderRecipeSearch() {
+  const list = document.getElementById('recipe-list');
+  const q = recipeQuery.trim();
+
+  if (!q) {
+    list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">🔎</span>Type a recipe name to search online.</div>';
+    return;
+  }
+
+  list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">⏳</span>Searching…</div>';
+
+  fetchMealDbSearch(q).then(results => {
+    if (recipeMode !== 'search' || recipeQuery.trim() !== q) return; // stale response, a newer search is in flight
+    previewMeals = {};
+    results.forEach(m => { previewMeals[m.id] = m; });
+
+    if (results.length === 0) {
+      list.innerHTML = `<div class="empty-state"><span class="empty-state-icon">📖</span>No recipes found for "${q}".</div>`;
+      return;
+    }
+
+    list.innerHTML = '';
+    results.forEach(meal => {
+      const card = document.createElement('button');
+      card.className = 'recipe-card';
+      card.setAttribute('aria-label', `Preview recipe: ${meal.name}`);
+
+      const pills = [];
+      if (meal.tags && meal.tags.length) pills.push(`<span class="recipe-pill">${meal.tags[0]}</span>`);
+
+      card.innerHTML = `
+        <span class="recipe-emoji">${meal.emoji || '🍽'}</span>
+        <span class="recipe-card-info">
+          <span class="recipe-card-name">${meal.name}</span>
+          <span class="recipe-card-meta">${pills.join('')}</span>
+        </span>`;
+
+      card.addEventListener('click', () => openRecipe(meal.id));
+      list.appendChild(card);
+    });
+  }).catch(() => {
+    if (recipeMode !== 'search' || recipeQuery.trim() !== q) return;
+    list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">📡</span>Search unavailable — check your connection.</div>';
+  });
+}
+
+// ─────────────────────────────────────────────
+// THEMEALDB → APP MEAL MAPPING
+// ─────────────────────────────────────────────
+function mapMealDbToAppMeal(m) {
+  return {
+    id: 'custom_' + m.idMeal,
+    type: undefined,
+    emoji: '🍽',
+    name: m.strMeal,
+    tags: (m.strTags || '').split(',').map(t => t.trim().toLowerCase()).filter(Boolean),
+    prepTime: undefined,
+    cal: undefined,
+    protein: undefined,
+    imported: true,
+    source: 'themealdb',
+    sourceId: m.idMeal,
+    ingredients: parseMealDbIngredients(m),
+    steps: parseMealDbSteps(m.strInstructions),
+  };
+}
+
+function parseMealDbIngredients(m) {
+  const ingredients = [];
+  for (let i = 1; i <= 20; i++) {
+    const name = (m['strIngredient' + i] || '').trim();
+    if (!name) continue;
+    const measure = (m['strMeasure' + i] || '').trim();
+    const { qty, unit } = parseMeasure(measure);
+    ingredients.push({ name, qty, unit, category: guessCategory(name) });
+  }
+  return ingredients;
+}
+
+function parseMeasure(measure) {
+  if (!measure) return { qty: 0, unit: '' };
+
+  // "1 1/2 cups" style mixed number
+  let match = measure.match(/^(\d+)\s+(\d+)\/(\d+)\s*(.*)$/);
+  if (match) {
+    const qty = Number(match[1]) + Number(match[2]) / Number(match[3]);
+    return normalizeMealDbUnit(qty, match[4].trim());
+  }
+  // "1/2 cup" simple fraction
+  match = measure.match(/^(\d+)\/(\d+)\s*(.*)$/);
+  if (match) {
+    const qty = Number(match[1]) / Number(match[2]);
+    return normalizeMealDbUnit(qty, match[3].trim());
+  }
+  // "200g" / "2 cups" / "2.5 oz"
+  match = measure.match(/^([\d.]+)\s*(.*)$/);
+  if (match) {
+    const qty = Number(match[1]);
+    return normalizeMealDbUnit(qty, match[2].trim());
+  }
+  // Free text with no leading number, e.g. "a pinch", "to taste"
+  return { qty: 0, unit: measure };
+}
+
+function normalizeMealDbUnit(qty, unitText) {
+  const u = unitText.toLowerCase().replace(/s$/, ''); // drop trailing plural s
+
+  if (u === 'g' || u === 'gram') return { qty: qty / 28.35, unit: 'oz' };
+  if (u === 'kg' || u === 'kilogram') return { qty: (qty * 1000) / 28.35, unit: 'oz' };
+  if (u === 'lb' || u === 'pound') return { qty: qty * 16, unit: 'oz' };
+  if (u === 'oz' || u === 'ounce') return { qty, unit: 'oz' };
+  if (u === 'ml' || u === 'millilitre' || u === 'milliliter') return { qty: qty / 29.57, unit: 'fl oz' };
+  if (u === 'fl oz' || u === 'fluid ounce') return { qty, unit: 'fl oz' };
+  if (u === 'cup') return { qty, unit: 'cups' };
+  if (u === 'tbsp' || u === 'tablespoon') return { qty, unit: 'tbsp' };
+  if (u === 'tsp' || u === 'teaspoon') return { qty, unit: 'tsp' };
+  if (u === 'slice') return { qty, unit: 'slices' };
+  if (u === '') return { qty, unit: 'count' };
+  return { qty, unit: unitText }; // unrecognized unit, kept as-is (e.g. "pinch", "clove")
+}
+
+function guessCategory(name) {
+  const n = name.toLowerCase();
+  if (/chicken|beef|pork|turkey|salmon|fish|shrimp|prawn|bacon|sausage|lamb|tofu|egg/.test(n)) return 'protein';
+  if (/milk|cheese|yog(h)?urt|butter|cream/.test(n)) return 'dairy';
+  if (/onion|garlic|pepper|tomato|spinach|lettuce|carrot|potato|herb|lemon|lime|avocado|broccoli|ginger/.test(n)) return 'produce';
+  if (/rice|pasta|bread|flour|oat|noodle|tortilla|couscous/.test(n)) return 'grains';
+  if (/canned|tinned|chickpea|black bean|kidney bean/.test(n)) return 'canned';
+  if (/salt|paprika|cumin|cinnamon|chili|chilli|spice|turmeric|masala|cardamom|clove/.test(n)) return 'spices';
+  return 'pantry';
+}
+
+function parseMealDbSteps(instructions) {
+  if (!instructions) return [];
+  return instructions
+    .split(/\r?\n/)
+    .map(s => s.replace(/^\s*\d+[.)]\s*/, '').trim())
+    .filter(Boolean);
 }
 
 // ─────────────────────────────────────────────
@@ -577,6 +860,28 @@ function openRecipe(id) {
     </div>` : ''}
   `;
 
+  if (meal.source === 'themealdb' && !getCustomMeals()[meal.id]) {
+    body.innerHTML += `
+      <div class="modal-section save-recipe-section">
+        <div class="modal-section-title">Save this recipe</div>
+        <p class="swap-sub">Which meal slot does it belong to?</p>
+        <div class="save-slot-row">
+          <button class="filter-btn" data-slot="breakfast">Breakfast</button>
+          <button class="filter-btn" data-slot="lunch">Lunch</button>
+          <button class="filter-btn" data-slot="dinner">Dinner</button>
+        </div>
+      </div>`;
+
+    body.querySelectorAll('.save-slot-row .filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        meal.type = btn.dataset.slot;
+        saveCustomMeal(meal);
+        body.querySelector('.save-recipe-section').innerHTML =
+          '<div class="modal-section-title">Saved to My Recipes!</div>';
+      });
+    });
+  }
+
   const modal = document.getElementById('recipe-modal');
   modal.removeAttribute('hidden');
   modal.querySelector('.modal-sheet').scrollTop = 0;
@@ -587,6 +892,114 @@ function closeRecipe() {
   document.getElementById('recipe-modal').setAttribute('hidden', '');
   document.body.style.overflow = '';
   openMealId = null;
+}
+
+// ─────────────────────────────────────────────
+// SWAP MODAL
+// ─────────────────────────────────────────────
+const SLOT_TYPE_NAME = { b: 'breakfast', l: 'lunch', d: 'dinner' };
+
+function openSwapModal(dayIndex, slotType) {
+  const weekAnchor = weekAnchorFromOffset(currentWeekOffset);
+  swapContext = { dayIndex, slotType, wk: weekKey(weekAnchor) };
+
+  renderSwapModal('');
+
+  const modal = document.getElementById('swap-modal');
+  modal.removeAttribute('hidden');
+  modal.querySelector('.modal-sheet').scrollTop = 0;
+  document.body.style.overflow = 'hidden';
+}
+
+function closeSwapModal() {
+  document.getElementById('swap-modal').setAttribute('hidden', '');
+  document.body.style.overflow = '';
+  swapContext = null;
+}
+
+function renderSwapModal(filterText) {
+  if (!swapContext) return;
+  const { dayIndex, slotType, wk } = swapContext;
+  const typeName = SLOT_TYPE_NAME[slotType];
+  const plan = getDayPlan(weekAnchorFromOffset(currentWeekOffset), dayIndex);
+  const currentMeal = getMeal(plan[slotType]);
+  const hasOverride = !!getOverrides(wk)[`${dayIndex}-${slotType}`];
+
+  const body = document.getElementById('swap-modal-body');
+  body.innerHTML = `
+    <h2 class="modal-title">Swap ${typeName[0].toUpperCase() + typeName.slice(1)}</h2>
+    <p class="swap-sub">${DAY_FULL[dayIndex]} · currently ${currentMeal ? currentMeal.name : '–'}</p>
+    <div class="recipe-search-wrap">
+      <input type="search" id="swap-search" class="recipe-search" placeholder="Search meals…" autocomplete="off" value="${(filterText || '').replace(/"/g, '&quot;')}">
+    </div>
+    ${hasOverride ? '<button class="btn-outline" id="swap-reset">Reset to rotation default</button>' : ''}
+    <div id="swap-candidates" class="recipe-list"></div>
+  `;
+
+  document.getElementById('swap-search').addEventListener('input', e => {
+    renderSwapCandidates(e.target.value);
+  });
+
+  if (hasOverride) {
+    document.getElementById('swap-reset').addEventListener('click', () => {
+      clearOverride(wk, `${dayIndex}-${slotType}`);
+      closeSwapModal();
+      renderCalendar();
+      if (activeView === 'shopping') renderShopping();
+    });
+  }
+
+  renderSwapCandidates(filterText || '');
+}
+
+function renderSwapCandidates(filterText) {
+  if (!swapContext) return;
+  const { dayIndex, slotType, wk } = swapContext;
+  const plan = getDayPlan(weekAnchorFromOffset(currentWeekOffset), dayIndex);
+  const currentId = plan[slotType];
+  const q = (filterText || '').toLowerCase().trim();
+
+  const candidates = Object.values(getAllMeals()).filter(m =>
+    m.type === slotType && m.id !== 'leftover' &&
+    (!q || m.name.toLowerCase().includes(q))
+  );
+
+  const list = document.getElementById('swap-candidates');
+  list.innerHTML = '';
+
+  if (candidates.length === 0) {
+    list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">📖</span>No matching meals.</div>';
+    return;
+  }
+
+  candidates.forEach(meal => {
+    const card = document.createElement('button');
+    card.className = 'recipe-card';
+    card.setAttribute('aria-label', `Swap in: ${meal.name}`);
+
+    const pills = [];
+    if (meal.id === currentId) pills.push('<span class="recipe-pill current">Current</span>');
+    if (meal.prepTime) pills.push(`<span class="recipe-pill">⏱ ${meal.prepTime} min</span>`);
+    if (meal.cal)      pills.push(`<span class="recipe-pill">${meal.cal} cal</span>`);
+
+    card.innerHTML = `
+      <span class="recipe-emoji">${meal.emoji || '🍽'}</span>
+      <span class="recipe-card-info">
+        <span class="recipe-card-name">${meal.name}</span>
+        <span class="recipe-card-meta">${pills.join('')}</span>
+      </span>`;
+
+    card.addEventListener('click', () => {
+      const key = `${dayIndex}-${slotType}`;
+      setOverride(wk, key, meal.id);
+      setSkip(wk, key, false); // swapping a meal in always includes it in the shopping list
+      closeSwapModal();
+      renderCalendar();
+      if (activeView === 'shopping') renderShopping();
+    });
+
+    list.appendChild(card);
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -666,14 +1079,24 @@ function initEvents() {
   // Recipe modal close
   document.getElementById('modal-close').addEventListener('click', closeRecipe);
   document.getElementById('modal-backdrop').addEventListener('click', closeRecipe);
+
+  // Swap modal close
+  document.getElementById('swap-modal-close').addEventListener('click', closeSwapModal);
+  document.getElementById('swap-modal-backdrop').addEventListener('click', closeSwapModal);
+
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') closeRecipe();
+    if (e.key === 'Escape') { closeRecipe(); closeSwapModal(); }
   });
 
   // Recipe search + filters
   document.getElementById('recipe-search').addEventListener('input', e => {
     recipeQuery = e.target.value;
-    renderRecipes();
+    if (recipeMode === 'mine') {
+      renderRecipes();
+    } else {
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(renderRecipeSearch, 350);
+    }
   });
   document.querySelectorAll('.filter-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -682,6 +1105,29 @@ function initEvents() {
       recipeFilter = btn.dataset.filter;
       renderRecipes();
     });
+  });
+
+  // Recipe mode toggle (My Recipes / Search Online)
+  document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      recipeMode = btn.dataset.mode;
+      document.querySelector('.recipe-filters').style.display = recipeMode === 'search' ? 'none' : '';
+      document.getElementById('recipe-io-actions').style.display = recipeMode === 'search' ? 'none' : '';
+      renderRecipes();
+    });
+  });
+
+  // Recipe import / export
+  document.getElementById('export-recipes').addEventListener('click', exportCustomMeals);
+  document.getElementById('import-recipes').addEventListener('click', () => {
+    document.getElementById('import-file-input').click();
+  });
+  document.getElementById('import-file-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) importCustomMeals(file);
+    e.target.value = '';
   });
 
   // Shopping actions

@@ -58,6 +58,15 @@
 
     <!-- ── RECIPES VIEW ── -->
     <section id="view-recipes" class="view">
+      <div class="recipe-mode-toggle">
+        <button class="mode-btn active" data-mode="mine">My Recipes</button>
+        <button class="mode-btn" data-mode="search">Search Online</button>
+      </div>
+      <div class="recipe-io-actions" id="recipe-io-actions">
+        <button class="btn-outline" id="export-recipes">Export</button>
+        <button class="btn-outline" id="import-recipes">Import</button>
+        <input type="file" id="import-file-input" accept="application/json" hidden>
+      </div>
       <div class="recipe-search-wrap">
         <input type="search" id="recipe-search" class="recipe-search" placeholder="Search meals…" autocomplete="off">
       </div>
@@ -83,6 +92,16 @@
       <div class="modal-drag-handle"></div>
       <button class="modal-close" id="modal-close" aria-label="Close">&#10005;</button>
       <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ── SWAP MODAL ── -->
+  <div id="swap-modal" class="modal" aria-modal="true" role="dialog" hidden>
+    <div class="modal-backdrop" id="swap-modal-backdrop"></div>
+    <div class="modal-sheet">
+      <div class="modal-drag-handle"></div>
+      <button class="modal-close" id="swap-modal-close" aria-label="Close">&#10005;</button>
+      <div id="swap-modal-body" class="modal-body"></div>
     </div>
   </div>
 

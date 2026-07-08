@@ -30,6 +30,7 @@ let searchDebounceTimer = null;
 let searchBrowseMode = 'name'; // 'name' | 'cuisine' | 'category' | 'ingredient'
 let browseSelectedValue = null; // the chosen cuisine/category/ingredient value
 let browseOptionsCache = {};    // { c: [...], a: [...], i: [...] } cached TheMealDB list values
+let addRecipeType = 'breakfast'; // selected meal slot in the manual Add Recipe form
 
 // localStorage keys
 const LS_CHECKS   = 'mp_checks';   // { 'YYYY-WW': { 'item name': true } }
@@ -637,6 +638,7 @@ function renderRecipes() {
     if ((meal.tags||[]).includes('spicy'))  pills.push(`<span class="recipe-pill red">🌶 Spicy</span>`);
     if (meal.batch || (meal.tags||[]).includes('batch-friendly')) pills.push(`<span class="recipe-pill purple">Batch</span>`);
     if (meal.source === 'themealdb') pills.push(`<span class="recipe-pill blue">Saved</span>`);
+    if (meal.source === 'manual') pills.push(`<span class="recipe-pill">Custom</span>`);
 
     card.innerHTML = `
       <span class="recipe-emoji">${meal.emoji || '🍽'}</span>
@@ -1181,6 +1183,179 @@ function renderSwapCandidates(filterText) {
 }
 
 // ─────────────────────────────────────────────
+// ADD RECIPE (manual entry)
+// ─────────────────────────────────────────────
+function addIngredientRow(container) {
+  const row = document.createElement('div');
+  row.className = 'ar-ing-row';
+  row.innerHTML = `
+    <input type="text" class="ar-input ar-ing-name" placeholder="Ingredient">
+    <input type="number" class="ar-input ar-ing-qty" placeholder="Qty" step="0.01">
+    <select class="ar-ing-unit">
+      <option value="">count</option>
+      <option value="oz">oz</option>
+      <option value="cups">cups</option>
+      <option value="tbsp">tbsp</option>
+      <option value="tsp">tsp</option>
+      <option value="fl oz">fl oz</option>
+      <option value="slices">slices</option>
+    </select>
+    <select class="ar-ing-cat">
+      <option value="protein">Protein</option>
+      <option value="produce">Produce</option>
+      <option value="dairy">Dairy</option>
+      <option value="grains">Grains</option>
+      <option value="canned">Canned</option>
+      <option value="pantry">Pantry</option>
+      <option value="spices">Spices</option>
+    </select>
+    <button type="button" class="ar-ing-remove" aria-label="Remove ingredient">✕</button>
+  `;
+  row.querySelector('.ar-ing-remove').addEventListener('click', () => row.remove());
+  container.appendChild(row);
+}
+
+function addStepRow(container) {
+  const row = document.createElement('div');
+  row.className = 'ar-step-row';
+  row.innerHTML = `
+    <input type="text" class="ar-input ar-step-text" placeholder="Step description">
+    <button type="button" class="ar-step-remove" aria-label="Remove step">✕</button>
+  `;
+  row.querySelector('.ar-step-remove').addEventListener('click', () => row.remove());
+  container.appendChild(row);
+}
+
+function openAddRecipeModal() {
+  addRecipeType = 'breakfast';
+  const body = document.getElementById('add-recipe-modal-body');
+  body.innerHTML = `
+    <h2 class="modal-title">Add a Recipe</h2>
+
+    <div class="modal-section">
+      <label class="ar-label">Name</label>
+      <input type="text" id="ar-name" class="ar-input" placeholder="Recipe name">
+    </div>
+
+    <div class="modal-section">
+      <label class="ar-label">Meal slot</label>
+      <div class="save-slot-row" id="ar-type-row">
+        <button type="button" class="filter-btn active" data-type="breakfast">Breakfast</button>
+        <button type="button" class="filter-btn" data-type="lunch">Lunch</button>
+        <button type="button" class="filter-btn" data-type="dinner">Dinner</button>
+      </div>
+    </div>
+
+    <div class="modal-section ar-meta-row">
+      <input type="text" id="ar-emoji" class="ar-emoji-input" placeholder="🍽" maxlength="2">
+      <input type="number" id="ar-preptime" class="ar-num-input" placeholder="Prep (min)">
+      <input type="number" id="ar-cal" class="ar-num-input" placeholder="Calories">
+      <input type="number" id="ar-protein" class="ar-num-input" placeholder="Protein (g)">
+    </div>
+
+    <div class="modal-section">
+      <label class="ar-check-row"><input type="checkbox" id="ar-batch"> Batch recipe (already makes 4 servings)</label>
+      <input type="text" id="ar-batchnote" class="ar-input" placeholder='Batch note, e.g. "Makes 4 servings, keeps 4 days"' hidden>
+    </div>
+
+    <div class="modal-section">
+      <div class="modal-section-title">Ingredients</div>
+      <div id="ar-ingredients"></div>
+      <button type="button" class="btn-outline" id="ar-add-ingredient">+ Add ingredient</button>
+    </div>
+
+    <div class="modal-section">
+      <div class="modal-section-title">Steps</div>
+      <div id="ar-steps"></div>
+      <button type="button" class="btn-outline" id="ar-add-step">+ Add step</button>
+    </div>
+
+    <button type="button" class="btn-outline ar-save-btn" id="ar-save">Save Recipe</button>
+  `;
+
+  const ingContainer = document.getElementById('ar-ingredients');
+  const stepContainer = document.getElementById('ar-steps');
+  addIngredientRow(ingContainer);
+  addStepRow(stepContainer);
+
+  document.getElementById('ar-add-ingredient').addEventListener('click', () => addIngredientRow(ingContainer));
+  document.getElementById('ar-add-step').addEventListener('click', () => addStepRow(stepContainer));
+
+  document.querySelectorAll('#ar-type-row .filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#ar-type-row .filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      addRecipeType = btn.dataset.type;
+    });
+  });
+
+  document.getElementById('ar-batch').addEventListener('change', e => {
+    document.getElementById('ar-batchnote').hidden = !e.target.checked;
+  });
+
+  document.getElementById('ar-save').addEventListener('click', saveManualRecipe);
+
+  const modal = document.getElementById('add-recipe-modal');
+  modal.removeAttribute('hidden');
+  modal.querySelector('.modal-sheet').scrollTop = 0;
+  document.body.style.overflow = 'hidden';
+}
+
+function closeAddRecipeModal() {
+  document.getElementById('add-recipe-modal').setAttribute('hidden', '');
+  document.body.style.overflow = '';
+}
+
+function saveManualRecipe() {
+  const name = document.getElementById('ar-name').value.trim();
+  if (!name) { alert('Please enter a recipe name.'); return; }
+
+  const ingredients = [];
+  document.querySelectorAll('#ar-ingredients .ar-ing-row').forEach(row => {
+    const ingName = row.querySelector('.ar-ing-name').value.trim();
+    if (!ingName) return;
+    ingredients.push({
+      name: ingName,
+      qty: parseFloat(row.querySelector('.ar-ing-qty').value) || 0,
+      unit: row.querySelector('.ar-ing-unit').value,
+      category: row.querySelector('.ar-ing-cat').value,
+    });
+  });
+  if (ingredients.length === 0) { alert('Add at least one ingredient.'); return; }
+
+  const steps = [];
+  document.querySelectorAll('#ar-steps .ar-step-text').forEach(input => {
+    const text = input.value.trim();
+    if (text) steps.push(text);
+  });
+
+  const meal = {
+    id: 'custom_manual_' + Date.now(),
+    type: addRecipeType,
+    emoji: document.getElementById('ar-emoji').value.trim() || '🍽',
+    name,
+    tags: [],
+    prepTime: parseInt(document.getElementById('ar-preptime').value, 10) || undefined,
+    cal: parseInt(document.getElementById('ar-cal').value, 10) || undefined,
+    protein: parseInt(document.getElementById('ar-protein').value, 10) || undefined,
+    ingredients,
+    steps,
+    source: 'manual',
+  };
+
+  if (document.getElementById('ar-batch').checked) {
+    meal.batch = true;
+    const note = document.getElementById('ar-batchnote').value.trim();
+    if (note) meal.batchNote = note;
+  }
+
+  saveCustomMeal(meal);
+  closeAddRecipeModal();
+  if (activeView === 'recipes') renderRecipes();
+  alert('Recipe saved to My Recipes!');
+}
+
+// ─────────────────────────────────────────────
 // NAVIGATION
 // ─────────────────────────────────────────────
 function switchView(name) {
@@ -1263,7 +1438,7 @@ function initEvents() {
   document.getElementById('swap-modal-backdrop').addEventListener('click', closeSwapModal);
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { closeRecipe(); closeSwapModal(); }
+    if (e.key === 'Escape') { closeRecipe(); closeSwapModal(); closeAddRecipeModal(); }
   });
 
   // Recipe search + filters
@@ -1335,6 +1510,11 @@ function initEvents() {
     if (file) importCustomMeals(file);
     e.target.value = '';
   });
+
+  // Add Recipe (manual entry)
+  document.getElementById('add-recipe-btn').addEventListener('click', openAddRecipeModal);
+  document.getElementById('add-recipe-modal-close').addEventListener('click', closeAddRecipeModal);
+  document.getElementById('add-recipe-modal-backdrop').addEventListener('click', closeAddRecipeModal);
 
   // Shopping actions
   document.getElementById('clear-checks').addEventListener('click', () => {

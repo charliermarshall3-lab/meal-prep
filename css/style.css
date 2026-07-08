@@ -415,6 +415,89 @@ input  { font-family: inherit; }
 
 .swap-sub { font-size: 0.8rem; color: var(--text-muted); margin: 0.25rem 0 0.75rem; }
 .browse-loading { font-size: 0.8rem; color: var(--text-muted); padding: 0.35rem 0.25rem; }
+
+/* ── Add Recipe form ── */
+.ar-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.35rem;
+}
+.ar-input {
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  background: var(--card);
+  outline: none;
+}
+.ar-input:focus { border-color: var(--green-500); }
+.ar-meta-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.ar-emoji-input {
+  width: 48px;
+  text-align: center;
+  padding: 0.5rem;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 1.1rem;
+  background: var(--card);
+}
+.ar-num-input {
+  flex: 1;
+  min-width: 70px;
+  padding: 0.5rem;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  background: var(--card);
+}
+.ar-check-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+.ar-ing-row, .ar-step-row {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+  align-items: center;
+}
+.ar-ing-name, .ar-step-text { flex: 2; min-width: 0; }
+.ar-ing-qty { flex: 1; min-width: 0; }
+.ar-ing-unit, .ar-ing-cat {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  font-size: 0.78rem;
+}
+.ar-ing-remove, .ar-step-remove {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: var(--green-50);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.ar-save-btn {
+  width: 100%;
+  margin-top: 0.5rem;
+  border-color: var(--green-500);
+  color: var(--green-700);
+  font-weight: 700;
+}
 .save-slot-row { display: flex; gap: 0.5rem; }
 .save-slot-row .filter-btn { flex: 1; text-align: center; }
 

@@ -63,6 +63,7 @@
         <button class="mode-btn" data-mode="search">Search Online</button>
       </div>
       <div class="recipe-io-actions" id="recipe-io-actions">
+        <button class="btn-outline" id="add-recipe-btn">+ Add Recipe</button>
         <button class="btn-outline" id="export-recipes">Export</button>
         <button class="btn-outline" id="import-recipes">Import</button>
         <input type="file" id="import-file-input" accept="application/json" hidden>
@@ -110,6 +111,16 @@
       <div class="modal-drag-handle"></div>
       <button class="modal-close" id="swap-modal-close" aria-label="Close">&#10005;</button>
       <div id="swap-modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ── ADD RECIPE MODAL ── -->
+  <div id="add-recipe-modal" class="modal" aria-modal="true" role="dialog" hidden>
+    <div class="modal-backdrop" id="add-recipe-modal-backdrop"></div>
+    <div class="modal-sheet">
+      <div class="modal-drag-handle"></div>
+      <button class="modal-close" id="add-recipe-modal-close" aria-label="Close">&#10005;</button>
+      <div id="add-recipe-modal-body" class="modal-body"></div>
     </div>
   </div>
 

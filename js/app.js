@@ -27,6 +27,9 @@ let recipeMode = 'mine';      // 'mine' | 'search'
 let swapContext = null;       // { dayIndex, slotType, wk }
 let previewMeals = {};        // in-memory, non-persisted live-search results keyed by temp id
 let searchDebounceTimer = null;
+let searchBrowseMode = 'name'; // 'name' | 'cuisine' | 'category' | 'ingredient'
+let browseSelectedValue = null; // the chosen cuisine/category/ingredient value
+let browseOptionsCache = {};    // { c: [...], a: [...], i: [...] } cached TheMealDB list values
 
 // localStorage keys
 const LS_CHECKS   = 'mp_checks';   // { 'YYYY-WW': { 'item name': true } }
@@ -35,8 +38,9 @@ const LS_SKIP     = 'mp_skip';     // { 'YYYY-WW': { '0-b': true, ... } } exclud
 const LS_OVERRIDE = 'mp_override'; // { 'YYYY-WW': { '0-d': 'mealId', ... } } swapped meals
 const LS_CUSTOM   = 'mp_custom';   // { mealId: mealObj } user-saved/imported recipes
 
-// TheMealDB free public search endpoint (test key "1", no signup required)
-const MEALDB_SEARCH_URL = 'https://www.themealdb.com/api/json/v1/1/search.php?s=';
+// TheMealDB free public API (test key "1", no signup required)
+const MEALDB_BASE = 'https://www.themealdb.com/api/json/v1/1/';
+const MEALDB_SEARCH_URL = MEALDB_BASE + 'search.php?s=';
 
 // ─────────────────────────────────────────────
 // DATE UTILITIES
@@ -660,6 +664,42 @@ function fetchMealDbSearch(query) {
 
 function renderRecipeSearch() {
   const list = document.getElementById('recipe-list');
+  const searchWrap = document.getElementById('recipe-search-wrap');
+  const optionsBar = document.getElementById('search-browse-options');
+
+  if (searchBrowseMode === 'name') {
+    searchWrap.hidden = false;
+    optionsBar.hidden = true;
+    optionsBar.innerHTML = '';
+    renderRecipeNameSearch(list);
+    return;
+  }
+
+  if (searchBrowseMode === 'ingredient') {
+    searchWrap.hidden = false;
+    optionsBar.hidden = false;
+    renderIngredientOptions(optionsBar);
+    if (!browseSelectedValue) {
+      list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">🥕</span>Type an ingredient, then pick one below.</div>';
+      return;
+    }
+    renderBrowseResults(list, 'i', browseSelectedValue);
+    return;
+  }
+
+  // cuisine / category
+  searchWrap.hidden = true;
+  optionsBar.hidden = false;
+  const kind = searchBrowseMode === 'cuisine' ? 'a' : 'c';
+  renderFixedOptions(optionsBar, kind);
+  if (!browseSelectedValue) {
+    list.innerHTML = `<div class="empty-state"><span class="empty-state-icon">📖</span>Pick a ${searchBrowseMode} above.</div>`;
+    return;
+  }
+  renderBrowseResults(list, kind, browseSelectedValue);
+}
+
+function renderRecipeNameSearch(list) {
   const q = recipeQuery.trim();
 
   if (!q) {
@@ -670,8 +710,7 @@ function renderRecipeSearch() {
   list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">⏳</span>Searching…</div>';
 
   fetchMealDbSearch(q).then(results => {
-    if (recipeMode !== 'search' || recipeQuery.trim() !== q) return; // stale response, a newer search is in flight
-    previewMeals = {};
+    if (searchBrowseMode !== 'name' || recipeQuery.trim() !== q) return; // stale response, a newer search is in flight
     results.forEach(m => { previewMeals[m.id] = m; });
 
     if (results.length === 0) {
@@ -699,7 +738,146 @@ function renderRecipeSearch() {
       list.appendChild(card);
     });
   }).catch(() => {
-    if (recipeMode !== 'search' || recipeQuery.trim() !== q) return;
+    if (searchBrowseMode !== 'name' || recipeQuery.trim() !== q) return;
+    list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">📡</span>Search unavailable — check your connection.</div>';
+  });
+}
+
+// ─────────────────────────────────────────────
+// BROWSE MODES (cuisine / category / ingredient / random)
+// ─────────────────────────────────────────────
+function fetchMealDbJson(path) {
+  return fetch(MEALDB_BASE + path).then(r => {
+    if (!r.ok) throw new Error('bad response');
+    return r.json();
+  });
+}
+
+function fetchMealDbList(kind) {
+  // kind: 'c' (category) | 'a' (area/cuisine) | 'i' (ingredient)
+  if (browseOptionsCache[kind]) return Promise.resolve(browseOptionsCache[kind]);
+  const field = kind === 'c' ? 'strCategory' : kind === 'a' ? 'strArea' : 'strIngredient';
+  return fetchMealDbJson(`list.php?${kind}=list`).then(data => {
+    const values = (data.meals || []).map(m => m[field]).filter(Boolean);
+    browseOptionsCache[kind] = values;
+    return values;
+  });
+}
+
+function fetchMealDbFilter(kind, value) {
+  // TheMealDB expects underscores in place of spaces for multi-word ingredient names
+  const param = kind === 'i' ? value.trim().replace(/\s+/g, '_') : value;
+  return fetchMealDbJson(`filter.php?${kind}=${encodeURIComponent(param)}`)
+    .then(data => (data.meals || []).map(m => ({ id: 'custom_' + m.idMeal, rawId: m.idMeal, name: m.strMeal })));
+}
+
+function fetchMealDbById(rawId) {
+  return fetchMealDbJson(`lookup.php?i=${encodeURIComponent(rawId)}`)
+    .then(data => {
+      const m = (data.meals || [])[0];
+      return m ? mapMealDbToAppMeal(m) : null;
+    });
+}
+
+function fetchMealDbRandom() {
+  return fetchMealDbJson('random.php').then(data => {
+    const m = (data.meals || [])[0];
+    return m ? mapMealDbToAppMeal(m) : null;
+  });
+}
+
+function renderFixedOptions(container, kind) {
+  container.innerHTML = '<span class="browse-loading">Loading…</span>';
+  fetchMealDbList(kind).then(values => {
+    container.innerHTML = '';
+    values.forEach(v => {
+      const chip = document.createElement('button');
+      chip.className = 'filter-btn' + (v === browseSelectedValue ? ' active' : '');
+      chip.textContent = v;
+      chip.addEventListener('click', () => {
+        browseSelectedValue = v;
+        renderRecipeSearch();
+      });
+      container.appendChild(chip);
+    });
+  }).catch(() => {
+    container.innerHTML = '<span class="browse-loading">Unavailable offline.</span>';
+  });
+}
+
+function renderIngredientOptions(container) {
+  const q = recipeQuery.trim().toLowerCase();
+  if (!q) { container.innerHTML = ''; return; }
+  fetchMealDbList('i').then(values => {
+    if (recipeQuery.trim().toLowerCase() !== q) return; // stale, newer keystroke in flight
+    const matches = values.filter(v => v.toLowerCase().includes(q)).slice(0, 20);
+    container.innerHTML = '';
+    matches.forEach(v => {
+      const chip = document.createElement('button');
+      chip.className = 'filter-btn' + (v === browseSelectedValue ? ' active' : '');
+      chip.textContent = v;
+      chip.addEventListener('click', () => {
+        browseSelectedValue = v;
+        renderRecipeSearch();
+      });
+      container.appendChild(chip);
+    });
+  }).catch(() => {
+    container.innerHTML = '<span class="browse-loading">Unavailable offline.</span>';
+  });
+}
+
+function renderBrowseResults(list, kind, value) {
+  list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">⏳</span>Loading…</div>';
+  fetchMealDbFilter(kind, value).then(results => {
+    if (browseSelectedValue !== value) return; // stale, a different value was picked meanwhile
+
+    if (results.length === 0) {
+      list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">📖</span>No recipes found.</div>';
+      return;
+    }
+
+    list.innerHTML = '';
+    results.forEach(partial => {
+      const card = document.createElement('button');
+      card.className = 'recipe-card';
+      card.setAttribute('aria-label', `Preview recipe: ${partial.name}`);
+      card.innerHTML = `
+        <span class="recipe-emoji">🍽</span>
+        <span class="recipe-card-info">
+          <span class="recipe-card-name">${partial.name}</span>
+          <span class="recipe-card-meta"></span>
+        </span>`;
+
+      card.addEventListener('click', () => {
+        card.querySelector('.recipe-card-meta').textContent = 'Loading…';
+        fetchMealDbById(partial.rawId).then(full => {
+          if (!full) return;
+          previewMeals[full.id] = full;
+          openRecipe(full.id);
+        }).catch(() => {
+          card.querySelector('.recipe-card-meta').textContent = 'Unavailable';
+        });
+      });
+
+      list.appendChild(card);
+    });
+  }).catch(() => {
+    list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">📡</span>Search unavailable — check your connection.</div>';
+  });
+}
+
+function handleRandomRecipe() {
+  const list = document.getElementById('recipe-list');
+  const prevHtml = list.innerHTML;
+  list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">🎲</span>Finding something…</div>';
+
+  fetchMealDbRandom().then(meal => {
+    list.innerHTML = prevHtml;
+    if (!meal) return;
+    previewMeals[meal.id] = meal;
+    openRecipe(meal.id);
+  }).catch(() => {
     list.innerHTML = '<div class="empty-state"><span class="empty-state-icon">📡</span>Search unavailable — check your connection.</div>';
   });
 }
@@ -1098,9 +1276,9 @@ function initEvents() {
       searchDebounceTimer = setTimeout(renderRecipeSearch, 350);
     }
   });
-  document.querySelectorAll('.filter-btn').forEach(btn => {
+  document.querySelectorAll('#recipe-tag-filters .filter-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('#recipe-tag-filters .filter-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       recipeFilter = btn.dataset.filter;
       renderRecipes();
@@ -1113,9 +1291,37 @@ function initEvents() {
       document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       recipeMode = btn.dataset.mode;
-      document.querySelector('.recipe-filters').style.display = recipeMode === 'search' ? 'none' : '';
-      document.getElementById('recipe-io-actions').style.display = recipeMode === 'search' ? 'none' : '';
+      const inSearch = recipeMode === 'search';
+      document.getElementById('recipe-tag-filters').style.display = inSearch ? 'none' : '';
+      document.getElementById('recipe-io-actions').style.display = inSearch ? 'none' : '';
+      document.getElementById('search-browse-bar').hidden = !inSearch;
+      if (inSearch) {
+        searchBrowseMode = 'name';
+        browseSelectedValue = null;
+        recipeQuery = '';
+        document.getElementById('recipe-search').value = '';
+        document.querySelectorAll('#search-browse-bar .filter-btn').forEach(b =>
+          b.classList.toggle('active', b.dataset.browse === 'name'));
+      }
       renderRecipes();
+    });
+  });
+
+  // Search-mode browse bar (name / cuisine / category / ingredient / random)
+  document.querySelectorAll('#search-browse-bar .filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.browse;
+      if (mode === 'random') {
+        handleRandomRecipe();
+        return; // one-shot action, doesn't change the active browse mode
+      }
+      document.querySelectorAll('#search-browse-bar .filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      searchBrowseMode = mode;
+      browseSelectedValue = null;
+      recipeQuery = '';
+      document.getElementById('recipe-search').value = '';
+      renderRecipeSearch();
     });
   });
 

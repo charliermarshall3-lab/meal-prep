@@ -67,10 +67,18 @@
         <button class="btn-outline" id="import-recipes">Import</button>
         <input type="file" id="import-file-input" accept="application/json" hidden>
       </div>
-      <div class="recipe-search-wrap">
+      <div id="search-browse-bar" class="recipe-filters" hidden>
+        <button class="filter-btn active" data-browse="name">🔎 Name</button>
+        <button class="filter-btn" data-browse="cuisine">🌍 Cuisine</button>
+        <button class="filter-btn" data-browse="category">🍽 Category</button>
+        <button class="filter-btn" data-browse="ingredient">🥕 Ingredient</button>
+        <button class="filter-btn" data-browse="random">🎲 Surprise Me</button>
+      </div>
+      <div class="recipe-search-wrap" id="recipe-search-wrap">
         <input type="search" id="recipe-search" class="recipe-search" placeholder="Search meals…" autocomplete="off">
       </div>
-      <div class="recipe-filters">
+      <div id="search-browse-options" class="recipe-filters" hidden></div>
+      <div class="recipe-filters" id="recipe-tag-filters">
         <button class="filter-btn active" data-filter="all">All</button>
         <button class="filter-btn" data-filter="breakfast">Breakfast</button>
         <button class="filter-btn" data-filter="lunch">Lunch</button>

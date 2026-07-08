@@ -414,6 +414,7 @@ input  { font-family: inherit; }
 .recipe-pill.current { background: var(--green-900); color: #fff; }
 
 .swap-sub { font-size: 0.8rem; color: var(--text-muted); margin: 0.25rem 0 0.75rem; }
+.browse-loading { font-size: 0.8rem; color: var(--text-muted); padding: 0.35rem 0.25rem; }
 .save-slot-row { display: flex; gap: 0.5rem; }
 .save-slot-row .filter-btn { flex: 1; text-align: center; }
 

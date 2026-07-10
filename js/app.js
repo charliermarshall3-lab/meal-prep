@@ -1139,9 +1139,9 @@ function renderSwapCandidates(filterText) {
   const currentId = plan[slotType];
   const q = (filterText || '').toLowerCase().trim();
 
+  // Offer every recipe (any meal type, bundled or custom) — not just ones matching this slot's type
   const candidates = Object.values(getAllMeals()).filter(m =>
-    m.type === slotType && m.id !== 'leftover' &&
-    (!q || m.name.toLowerCase().includes(q))
+    m.id !== 'leftover' && (!q || m.name.toLowerCase().includes(q))
   );
 
   const list = document.getElementById('swap-candidates');
@@ -1159,6 +1159,10 @@ function renderSwapCandidates(filterText) {
 
     const pills = [];
     if (meal.id === currentId) pills.push('<span class="recipe-pill current">Current</span>');
+    if (meal.type) {
+      const colours = { breakfast: 'blue', lunch: 'amber', dinner: '' };
+      pills.push(`<span class="recipe-pill ${colours[meal.type] || ''}">${meal.type}</span>`);
+    }
     if (meal.prepTime) pills.push(`<span class="recipe-pill">⏱ ${meal.prepTime} min</span>`);
     if (meal.cal)      pills.push(`<span class="recipe-pill">${meal.cal} cal</span>`);
 
